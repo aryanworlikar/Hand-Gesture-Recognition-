@@ -1,0 +1,619 @@
+# Hand Gesture Recognition using CNN - Thumb, Palm, OK Gestures
+# Complete ML Pipeline for Google Colab
+# Author: AI Assistant
+# Compatible with TensorFlow 2.x
+# Gesture Classes: thumb, palm, ok
+
+# ============================================================================
+# 1. INSTALL AND IMPORT DEPENDENCIES
+# ============================================================================
+
+# Install required packages (uncomment if needed)
+# !pip install tensorflow matplotlib scikit-learn opencv-python-headless
+
+import os
+import zipfile
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report, confusion_matrix
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras import layers
+from tensorflow.keras.preprocessing.image import ImageDataGenerator, load_img, img_to_array
+from tensorflow.keras.utils import to_categorical
+import cv2
+from google.colab import files
+import random
+from pathlib import Path
+
+# Set random seeds for reproducibility
+np.random.seed(42)
+tf.random.set_seed(42)
+random.seed(42)
+
+print("TensorFlow version:", tf.__version__)
+print("GPU Available:", len(tf.config.experimental.list_physical_devices('GPU')) > 0)
+
+# ============================================================================
+# 2. DATASET UPLOAD AND EXTRACTION
+# ============================================================================
+
+def upload_and_extract_dataset():
+    """
+    Upload and extract the gesture dataset zip file
+    Expected structure: gesture_dataset/GestureName/images...
+    """
+    print("📁 Please upload your gesture dataset zip file...")
+    print("Expected structure for Thumb, Palm, OK gestures:")
+    print("  📦 dataset.zip")
+    print("    └── 📁 gesture_dataset/")
+    print("        ├── 📁 thumb/")
+    print("        ├── 📁 palm/")
+    print("        └── 📁 ok/")
+    
+    # Upload zip file
+    uploaded = files.upload()
+    
+    # Extract the uploaded file
+    for filename in uploaded.keys():
+        print(f"Extracting {filename}...")
+        with zipfile.ZipFile(filename, 'r') as zip_ref:
+            zip_ref.extractall()
+        print(f"✅ Extracted {filename}")
+        
+        # Remove the zip file to save space
+        os.remove(filename)
+    
+    # Find the dataset directory
+    if os.path.exists('gesture_dataset'):
+        dataset_path = 'gesture_dataset'
+    else:
+        # Look for any directory that might contain the dataset
+        dirs = [d for d in os.listdir('.') if os.path.isdir(d)]
+        print("Available directories:", dirs)
+        dataset_path = input("Enter the dataset directory name: ")
+    
+    return dataset_path
+
+# Upload and extract dataset
+dataset_path = upload_and_extract_dataset()
+
+# ============================================================================
+# 3. DATA EXPLORATION AND PREPROCESSING
+# ============================================================================
+
+def explore_dataset(dataset_path):
+    """Explore the dataset structure and statistics"""
+    gesture_classes = []
+    class_counts = {}
+    
+    print(f"\n📊 DATASET EXPLORATION")
+    print("="*50)
+    
+    for class_name in os.listdir(dataset_path):
+        class_path = os.path.join(dataset_path, class_name)
+        if os.path.isdir(class_path):
+            gesture_classes.append(class_name)
+            image_count = len([f for f in os.listdir(class_path) 
+                             if f.lower().endswith(('.png', '.jpg', '.jpeg'))])
+            class_counts[class_name] = image_count
+            print(f"🤟 {class_name}: {image_count} images")
+    
+    print(f"\n📈 Total Classes: {len(gesture_classes)}")
+    print(f"📈 Total Images: {sum(class_counts.values())}")
+    
+    return gesture_classes, class_counts
+
+def visualize_sample_images(dataset_path, gesture_classes, samples_per_class=3):
+    """Visualize sample images from each class"""
+    fig, axes = plt.subplots(len(gesture_classes), samples_per_class, 
+                            figsize=(12, 3*len(gesture_classes)))
+    fig.suptitle('Sample Images: Thumb, Palm, OK Gestures', fontsize=16, fontweight='bold')
+    
+    if len(gesture_classes) == 1:
+        axes = axes.reshape(1, -1)
+    
+    for i, gesture in enumerate(gesture_classes):
+        class_path = os.path.join(dataset_path, gesture)
+        image_files = [f for f in os.listdir(class_path) 
+                      if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+        
+        for j in range(min(samples_per_class, len(image_files))):
+            if j < len(image_files):
+                img_path = os.path.join(class_path, image_files[j])
+                img = load_img(img_path, target_size=(150, 150))
+                
+                axes[i, j].imshow(img)
+                axes[i, j].set_title(f'{gesture}')
+                axes[i, j].axis('off')
+            else:
+                axes[i, j].axis('off')
+    
+    plt.tight_layout()
+    plt.show()
+
+# Explore dataset
+gesture_classes, class_counts = explore_dataset(dataset_path)
+visualize_sample_images(dataset_path, gesture_classes)
+
+# ============================================================================
+# 4. DATA LOADING AND PREPROCESSING
+# ============================================================================
+
+def load_and_preprocess_data(dataset_path, gesture_classes, img_size=(150, 150)):
+    """
+    Load and preprocess all images from the dataset
+    """
+    print(f"\n🔄 LOADING AND PREPROCESSING DATA")
+    print("="*50)
+    
+    X = []  # Images
+    y = []  # Labels
+    
+    # Create label mapping
+    label_map = {gesture: idx for idx, gesture in enumerate(gesture_classes)}
+    print("Label mapping:", label_map)
+    
+    for gesture in gesture_classes:
+        class_path = os.path.join(dataset_path, gesture)
+        image_files = [f for f in os.listdir(class_path) 
+                      if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+        
+        print(f"Loading {gesture}: {len(image_files)} images")
+        
+        for img_file in image_files:
+            try:
+                img_path = os.path.join(class_path, img_file)
+                
+                # Load and preprocess image
+                img = load_img(img_path, target_size=img_size)
+                img_array = img_to_array(img)
+                img_array = img_array / 255.0  # Normalize to [0,1]
+                
+                X.append(img_array)
+                y.append(label_map[gesture])
+                
+            except Exception as e:
+                print(f"Error loading {img_path}: {e}")
+    
+    X = np.array(X)
+    y = np.array(y)
+    
+    print(f"✅ Data loaded successfully!")
+    print(f"📊 Images shape: {X.shape}")
+    print(f"📊 Labels shape: {y.shape}")
+    print(f"📊 Image data range: [{X.min():.3f}, {X.max():.3f}]")
+    
+    return X, y, label_map
+
+# Load and preprocess data
+X, y, label_map = load_and_preprocess_data(dataset_path, gesture_classes)
+
+# Create reverse label mapping for predictions
+reverse_label_map = {v: k for k, v in label_map.items()}
+print("Reverse label mapping:", reverse_label_map)
+
+# ============================================================================
+# 5. TRAIN-TEST SPLIT
+# ============================================================================
+
+print(f"\n🔀 TRAIN-TEST SPLIT")
+print("="*30)
+
+# Convert labels to categorical (one-hot encoding)
+y_categorical = to_categorical(y, num_classes=len(gesture_classes))
+
+# Split the data
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y_categorical, 
+    test_size=0.2, 
+    random_state=42, 
+    stratify=y
+)
+
+print(f"Training set: {X_train.shape[0]} images")
+print(f"Test set: {X_test.shape[0]} images")
+print(f"Number of classes: {len(gesture_classes)}")
+
+# ============================================================================
+# 6. DATA AUGMENTATION
+# ============================================================================
+
+def create_data_generators(X_train, y_train, X_test, y_test, batch_size=32):
+    """Create data generators with augmentation for training"""
+    
+    # Data augmentation for training
+    train_datagen = ImageDataGenerator(
+        rotation_range=20,
+        width_shift_range=0.2,
+        height_shift_range=0.2,
+        shear_range=0.2,
+        zoom_range=0.2,
+        horizontal_flip=True,
+        fill_mode='nearest'
+    )
+    
+    # No augmentation for test data
+    test_datagen = ImageDataGenerator()
+    
+    train_generator = train_datagen.flow(X_train, y_train, batch_size=batch_size)
+    test_generator = test_datagen.flow(X_test, y_test, batch_size=batch_size)
+    
+    return train_generator, test_generator
+
+train_gen, test_gen = create_data_generators(X_train, y_train, X_test, y_test)
+
+# ============================================================================
+# 7. CNN MODEL ARCHITECTURE
+# ============================================================================
+
+def create_cnn_model(input_shape, num_classes):
+    """
+    Create a CNN model optimized for 3-class hand gesture recognition (thumb, palm, ok)
+    """
+    model = keras.Sequential([
+        # First Convolutional Block
+        layers.Conv2D(32, (3, 3), activation='relu', input_shape=input_shape),
+        layers.BatchNormalization(),
+        layers.MaxPooling2D(2, 2),
+        
+        # Second Convolutional Block
+        layers.Conv2D(64, (3, 3), activation='relu'),
+        layers.BatchNormalization(),
+        layers.MaxPooling2D(2, 2),
+        
+        # Third Convolutional Block
+        layers.Conv2D(128, (3, 3), activation='relu'),
+        layers.BatchNormalization(),
+        layers.MaxPooling2D(2, 2),
+        
+        # Fourth Convolutional Block - Optimized for 3 classes
+        layers.Conv2D(64, (3, 3), activation='relu'),
+        layers.BatchNormalization(),
+        layers.MaxPooling2D(2, 2),
+        
+        # Flatten and Dense Layers - Reduced complexity for 3 classes
+        layers.Flatten(),
+        layers.Dropout(0.5),
+        layers.Dense(256, activation='relu'),  # Reduced from 512 to 256
+        layers.BatchNormalization(),
+        layers.Dropout(0.3),  # Reduced dropout for better learning
+        layers.Dense(num_classes, activation='softmax')
+    ])
+    
+    return model
+
+print(f"\n🏗️  BUILDING CNN MODEL FOR THUMB, PALM, OK GESTURES")
+print("="*55)
+
+# Create model
+input_shape = X_train.shape[1:]  # (150, 150, 3)
+num_classes = len(gesture_classes)
+
+model = create_cnn_model(input_shape, num_classes)
+
+# Compile model
+model.compile(
+    optimizer='adam',
+    loss='categorical_crossentropy',
+    metrics=['accuracy']
+)
+
+# Display model architecture
+model.summary()
+
+# ============================================================================
+# 8. MODEL TRAINING
+# ============================================================================
+
+def train_model(model, train_gen, test_gen, X_train, X_test, epochs=25):
+    """
+    Train the CNN model with callbacks
+    """
+    print(f"\n🚀 TRAINING MODEL")
+    print("="*25)
+    
+    # Define callbacks
+    callbacks = [
+        keras.callbacks.EarlyStopping(
+            monitor='val_accuracy',
+            patience=5,
+            restore_best_weights=True,
+            verbose=1
+        ),
+        keras.callbacks.ReduceLROnPlateau(
+            monitor='val_loss',
+            factor=0.2,
+            patience=3,
+            min_lr=0.0001,
+            verbose=1
+        )
+    ]
+    
+    # Calculate steps per epoch
+    steps_per_epoch = len(X_train) // 32
+    validation_steps = len(X_test) // 32
+    
+    # Train the model
+    history = model.fit(
+        train_gen,
+        steps_per_epoch=steps_per_epoch,
+        epochs=epochs,
+        validation_data=test_gen,
+        validation_steps=validation_steps,
+        callbacks=callbacks,
+        verbose=1
+    )
+    
+    return history
+
+# Train the model
+history = train_model(model, train_gen, test_gen, X_train, X_test, epochs=25)
+
+# ============================================================================
+# 9. MODEL EVALUATION
+# ============================================================================
+
+def evaluate_model(model, X_test, y_test, gesture_classes):
+    """
+    Evaluate the trained model
+    """
+    print(f"\n📊 MODEL EVALUATION")
+    print("="*25)
+    
+    # Make predictions
+    predictions = model.predict(X_test)
+    predicted_classes = np.argmax(predictions, axis=1)
+    true_classes = np.argmax(y_test, axis=1)
+    
+    # Calculate accuracy
+    accuracy = np.mean(predicted_classes == true_classes)
+    print(f"Test Accuracy: {accuracy:.4f} ({accuracy*100:.2f}%)")
+    
+    # Classification report
+    print("\n📋 Classification Report:")
+    print(classification_report(true_classes, predicted_classes, 
+                              target_names=gesture_classes))
+    
+    # Confusion Matrix
+    cm = confusion_matrix(true_classes, predicted_classes)
+    
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+                xticklabels=gesture_classes, yticklabels=gesture_classes)
+    plt.title('Confusion Matrix')
+    plt.xlabel('Predicted')
+    plt.ylabel('True')
+    plt.tight_layout()
+    plt.show()
+    
+    return accuracy
+
+# Evaluate the model
+test_accuracy = evaluate_model(model, X_test, y_test, gesture_classes)
+
+# ============================================================================
+# 10. TRAINING VISUALIZATION
+# ============================================================================
+
+def plot_training_history(history):
+    """
+    Plot training and validation accuracy/loss curves
+    """
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5))
+    
+    # Accuracy plot
+    ax1.plot(history.history['accuracy'], label='Training Accuracy', linewidth=2)
+    ax1.plot(history.history['val_accuracy'], label='Validation Accuracy', linewidth=2)
+    ax1.set_title('Model Accuracy', fontsize=14, fontweight='bold')
+    ax1.set_xlabel('Epoch')
+    ax1.set_ylabel('Accuracy')
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+    
+    # Loss plot
+    ax2.plot(history.history['loss'], label='Training Loss', linewidth=2)
+    ax2.plot(history.history['val_loss'], label='Validation Loss', linewidth=2)
+    ax2.set_title('Model Loss', fontsize=14, fontweight='bold')
+    ax2.set_xlabel('Epoch')
+    ax2.set_ylabel('Loss')
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.show()
+
+# Plot training history
+plot_training_history(history)
+
+# ============================================================================
+# 11. SAVE THE MODEL
+# ============================================================================
+
+print(f"\n💾 SAVING MODEL")
+print("="*20)
+
+# Save the model with specific name for thumb-palm-ok gestures
+model_filename = 'thumb_palm_ok_gesture_model.h5'
+model.save(model_filename)
+print(f"✅ Model saved as: {model_filename}")
+
+# Save label mapping with gesture-specific name
+import json
+with open('thumb_palm_ok_labels.json', 'w') as f:
+    json.dump(label_map, f)
+print("✅ Label mapping saved as: thumb_palm_ok_labels.json")
+
+# ============================================================================
+# 12. PREDICTION FUNCTIONS
+# ============================================================================
+
+def load_trained_model(model_path='thumb_palm_ok_gesture_model.h5'):
+    """Load the trained thumb-palm-ok gesture model"""
+    return keras.models.load_model(model_path)
+
+def preprocess_image_for_prediction(img_path, target_size=(150, 150)):
+    """Preprocess a single image for prediction"""
+    img = load_img(img_path, target_size=target_size)
+    img_array = img_to_array(img)
+    img_array = np.expand_dims(img_array, axis=0)  # Add batch dimension
+    img_array = img_array / 255.0  # Normalize
+    return img_array, img
+
+def predict_gesture(model, img_path, reverse_label_map):
+    """
+    Predict gesture for a single image
+    """
+    # Preprocess image
+    processed_img, original_img = preprocess_image_for_prediction(img_path)
+    
+    # Make prediction
+    predictions = model.predict(processed_img)
+    predicted_class_idx = np.argmax(predictions[0])
+    confidence = predictions[0][predicted_class_idx]
+    predicted_gesture = reverse_label_map[predicted_class_idx]
+    
+    return predicted_gesture, confidence, original_img, predictions[0]
+
+def visualize_predictions(model, X_test, y_test, reverse_label_map, num_samples=8):
+    """
+    Visualize predictions on test samples
+    """
+    # Select random samples
+    indices = random.sample(range(len(X_test)), num_samples)
+    
+    fig, axes = plt.subplots(2, 4, figsize=(16, 8))
+    axes = axes.ravel()
+    
+    for i, idx in enumerate(indices):
+        img = X_test[idx]
+        true_label_idx = np.argmax(y_test[idx])
+        true_label = reverse_label_map[true_label_idx]
+        
+        # Make prediction
+        pred = model.predict(np.expand_dims(img, axis=0))
+        pred_label_idx = np.argmax(pred[0])
+        pred_label = reverse_label_map[pred_label_idx]
+        confidence = pred[0][pred_label_idx]
+        
+        # Plot
+        axes[i].imshow(img)
+        color = 'green' if pred_label == true_label else 'red'
+        axes[i].set_title(f'True: {true_label}\nPred: {pred_label}\nConf: {confidence:.2f}', 
+                         color=color, fontweight='bold')
+        axes[i].axis('off')
+    
+    plt.suptitle('Prediction Results on Test Images', fontsize=16, fontweight='bold')
+    plt.tight_layout()
+    plt.show()
+
+# Visualize predictions on test set
+visualize_predictions(model, X_test, y_test, reverse_label_map)
+
+# ============================================================================
+# 13. INTERACTIVE PREDICTION (Upload New Images)
+# ============================================================================
+
+def test_on_new_images():
+    """
+    Allow user to upload new thumb, palm, or ok gesture images for testing
+    """
+    print(f"\n🤟 TESTING ON NEW THUMB, PALM, OK GESTURE IMAGES")
+    print("="*50)
+    print("Upload new hand gesture images (thumb, palm, or ok) to test the model...")
+    
+    # Upload new images
+    uploaded_files = files.upload()
+    
+    if not uploaded_files:
+        print("No files uploaded.")
+        return
+    
+    # Process each uploaded image
+    for filename in uploaded_files.keys():
+        print(f"\n🔍 Predicting gesture for: {filename}")
+        
+        try:
+            # Make prediction
+            predicted_gesture, confidence, original_img, all_predictions = predict_gesture(
+                model, filename, reverse_label_map
+            )
+            
+            # Display results
+            plt.figure(figsize=(12, 4))
+            
+            # Show original image
+            plt.subplot(1, 2, 1)
+            plt.imshow(original_img)
+            plt.title(f'Input Image: {filename}', fontweight='bold')
+            plt.axis('off')
+            
+            # Show prediction probabilities for thumb, palm, ok
+            plt.subplot(1, 2, 2)
+            gestures = list(reverse_label_map.values())
+            colors = ['#FF6B6B', '#4ECDC4', '#45B7D1']  # Custom colors for each gesture
+            bars = plt.barh(gestures, all_predictions, color=colors)
+            plt.xlabel('Confidence')
+            plt.title('Gesture Prediction Probabilities', fontweight='bold')
+            plt.gca().invert_yaxis()
+            
+            # Highlight the predicted class
+            max_idx = np.argmax(all_predictions)
+            bars[max_idx].set_color('#FF4444')
+            bars[max_idx].set_edgecolor('black')
+            bars[max_idx].set_linewidth(2)
+            
+            plt.tight_layout()
+            plt.show()
+            
+            # Print results with gesture-specific emojis
+            emoji_map = {'thumb': '👍', 'palm': '✋', 'ok': '👌'}
+            gesture_emoji = emoji_map.get(predicted_gesture.lower(), '🤟')
+            print(f"🎯 Predicted Gesture: {gesture_emoji} {predicted_gesture}")
+            print(f"🎯 Confidence: {confidence:.4f} ({confidence*100:.2f}%)")
+            
+            # Show all 3 predictions with emojis
+            print("\n📊 All Gesture Predictions:")
+            for i, (gesture, prob) in enumerate(zip(gestures, all_predictions)):
+                emoji = emoji_map.get(gesture.lower(), '🤟')
+                print(f"  {emoji} {gesture}: {prob:.4f} ({prob*100:.2f}%)")
+                
+        except Exception as e:
+            print(f"❌ Error processing {filename}: {e}")
+        
+        # Clean up
+        if os.path.exists(filename):
+            os.remove(filename)
+
+# Test on new images
+test_on_new_images()
+
+# ============================================================================
+# 14. MODEL SUMMARY AND FINAL RESULTS
+# ============================================================================
+
+print(f"\n🎉 HAND GESTURE RECOGNITION PROJECT COMPLETED!")
+print("="*55)
+print(f"📊 Dataset: {len(gesture_classes)} gesture classes")
+print(f"📊 Total images processed: {len(X)}")
+print(f"📊 Training images: {len(X_train)}")
+print(f"📊 Test images: {len(X_test)}")
+print(f"📊 Final test accuracy: {test_accuracy:.4f} ({test_accuracy*100:.2f}%)")
+print(f"💾 Model saved as: {model_filename}")
+print(f"💾 Label mapping saved as: label_mapping.json")
+
+print(f"\n🚀 USAGE INSTRUCTIONS:")
+print("="*25)
+print("1. The trained model is saved and ready to use")
+print("2. Use the predict_gesture() function to classify new images")
+print("3. Upload images using the test_on_new_images() function")
+print("4. Model can be loaded using: keras.models.load_model('hand_gesture_recognition_model.h5')")
+
+print(f"\n📝 GESTURE CLASSES:")
+print("="*20)
+for i, gesture in enumerate(gesture_classes):
+    print(f"{i}: {gesture}")
+
+print(f"\n✨ Ready for gesture-based control applications!")
